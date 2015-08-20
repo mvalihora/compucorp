@@ -1,4 +1,6 @@
 name = HybridAuth to Civi 
 description = "Adds HybridAuth data to CiviCRM contacts"
 core = 7.x
-
+dependencies[] = ctools
+dependencies[] = civicrm
+dependencies[] = hybridauth
