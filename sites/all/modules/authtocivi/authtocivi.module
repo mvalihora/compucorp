@@ -1,0 +1,168 @@
+<?php
+
+/**
+ * Implements hook_hybridauth_profile_altet().
+ *
+ * Fixes joined first/last name returned by Twitter
+ *
+ * @param object $profile
+ *   Reference to profile object containing current data from provider.
+ */
+function authtocivi_hybridauth_profile_alter(&$profile) {
+	if($profile['provider'] == 'Twitter'){
+		$parts = explode(' ', $profile['firstName'], 2);
+		$profile['firstName'] = reset($parts);
+		$profile['lastName'] = end ($parts);
+	}
+}
+
+/**
+ * Implements hook_form_hybridauth_additional_info_form_alter().
+ * 
+ * Adds birthdate field to contact form
+ */
+function authtocivi_form_hybridauth_additional_info_form_alter(&$form, &$form_state, $form_id){
+	$form['fset']['birthdate'] = array(
+		'#title' => t('Date of birth'),
+		'#type' => 'date',
+		'#required' => 1,
+		'#default_value' => array(
+			'month' => format_date(time(), 'custom', 'n'), 
+			'day' => format_date(time(), 'custom', 'j'), 
+			'year' => format_date(time(), 'custom', 'Y'),
+		),
+	);
+	
+    array_unshift($form['#submit'], 'authtocivi_form_hybridauth_additional_info_form_submit');
+}
+
+/**
+ * Additional info form submit function - fills birthdate atributes correctly from form values
+ */
+function authtocivi_form_hybridauth_additional_info_form_submit(&$form, &$form_state){
+	$gatheredData = &$form_state['values']['data'];
+	$formData = $form_state['values']['birthdate'];
+	$gatheredData['birthDay'] = $formData['day'];
+	$gatheredData['birthMonth'] = $formData['month'];
+	$gatheredData['birthYear'] = $formData['year'];
+	
+	if (isset($form_state['values']['birthdate'])) {
+		if (!isset($form_state['values']['data']['manual']) || is_array($form_state['values']['data']['manual'])) {
+		  $form_state['values']['data']['manual'][] = 'birthdate';
+		}
+	}
+}
+
+/**
+ * Implements hook_hybridauth_registration_form().
+ * 
+ * Ensures that additional info form is displayed allways due to birth date fields
+ * 
+ * @param array $data
+ * Forwarded data.
+ */
+function authtocivi_hybridauth_registration_form($data) {
+	if (empty($data['birthYear'])) {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Implements hook_hybridauth_user_insert().
+ *
+ * Adds data of logged user into CiviCrm contacts if not exist - duplicates checked by email address
+ *
+ * @param object $account
+ *   User account object.
+ * @param array $data
+ *   HybridAuth identity data.
+ */
+function authtocivi_hybridauth_user_insert($account, $data){
+	// Perform bootstrap
+	civicrm_initialize();
+	
+	try{
+		$contactID = authtocivi_get_contact_id_by_email($data['email']);
+		authtocivi_contact_update($contactID, $data);
+		
+	}
+	catch (CiviCRM_API3_Exception $e) {
+		return authtocivi_get_exception_result_array($e);
+	}
+}
+
+/**
+ * Looks for CiviCrm Contact ID connected to given email address
+ *
+ * @param string $email
+ *   Email address of user we're looking for
+ */
+function authtocivi_get_contact_id_by_email($email){
+	try{
+		$contacts = civicrm_api3('Email', 'get', array(
+			'sequential' => 1,
+			'return' => "contact_id",
+			'email' => $email
+		));
+		
+		if($contacts['count'] > 1){
+			throw new Exception('More than one account has assigned email address: '. $email);
+		}
+		else if($contacts['count'] < 1){
+			throw new Exception('No account has assigned email address: '. $email);
+		}
+		
+		$firstValue = reset($contacts['values']);
+		
+		return $firstValue['contact_id'];
+	}
+	catch (CiviCRM_API3_Exception $e) {
+		return authtocivi_get_exception_result_array($e);
+	}
+}
+
+/**
+ * Updates automatically created CiviCrm Contact with data gathered from login provider and additional form
+ *
+ * @param integer $contactID
+ *   ID of CiviCrm contact
+ * @param array $contactData
+ *   Array with gathered identity data.
+ */
+function authtocivi_contact_update($contactID, $contactData){
+	try{
+		$apiData = array(
+			'id' => $contactID,
+			'first_name'  =>  $contactData['firstName'],
+			'last_name'   =>  $contactData['lastName'],	
+			'gender_id' => $contactData['gender'] == 'male' ? 1 : 0,
+			'birth_date' => $contactData['birthYear'] .'-'. $contactData['birthMonth'] .'-'. $contactData['birthDay'],
+			'contact_type' => 'Individual'
+		);
+		
+		$contact = civicrm_api3('contact', 'create', $apiData);		
+		
+		return $contact;
+	}
+	catch (CiviCRM_API3_Exception $e) {
+		return authtocivi_get_exception_result_array($e);
+	}
+}
+
+/**
+ * Helper for handling return values by API exceptions
+ *
+ * @param object $e
+ *   Exception object.
+ */
+function authtocivi_get_exception_result_array($e){
+	$errorMessage = $e->getMessage();
+	$errorCode = $e->getErrorCode();
+	$errorData = $e->getExtraParams();
+	return array(
+	  'error' => $errorMessage,
+	  'error_code' => $errorCode,
+	  'error_data' => $errorData,
+	);
+}
